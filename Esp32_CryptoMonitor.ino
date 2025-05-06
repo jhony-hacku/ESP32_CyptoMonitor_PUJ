@@ -1,150 +1,207 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Arduino_JSON.h>
+
+// WiFi y MQTT
+const char* ssid = "ESP";
+const char* password = "BUZZ1%99";
+const char* mqtt_server = "broker.emqx.io";
+const int mqtt_port = 1883;
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
-// WiFi
-const char* ssid     = "ESP";
-const char* password = "BUZZ1%99";
-
-// MQTT Broker
-const char* mqtt_server = "broker.emqx.io";
-const int mqtt_port = 1883;
+// OLED
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#define OLED_ADDR 0x3C
+Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 // Pines
-const int led1 = 2;   // Controlado con "1"
-const int led2 = 15;  // Controlado con "2"
-const int led3 = 4;   // Controlado con "3"
-const int buzzerPin = 5;
-const int button18 = 18;
-const int button19 = 19;
+const int ledRed = 4;
+const int ledGreen = 15;
+const int ledWhite = 2;
+const int buttonRight = 19;
+const int buttonLeft = 18;
+const int buzzer = 5;
 
-// Estados de LEDs
-bool estadoLed1 = false;
-bool estadoLed2 = false;
-bool estadoLed3 = false;
+// Estados de botones
+bool lastButtonRight = HIGH;
+bool lastButtonLeft = HIGH;
 
-// Estado anterior de botones
-bool lastButton18 = HIGH;
-bool lastButton19 = HIGH;
+// Variables de precio
+float lastBTC = -1;
+float lastSOL = -1;
+float currentBTC = -1;
+float currentSOL = -1;
 
-char mensajeRespuesta[50];
-unsigned long lastMsg = 0;
+// Configuración dinámica
+String criptoBoton1 = "BTCUSDT";
+String criptoBoton2 = "SOLUSDT";
+float alertaBoton1 = -1;
+float alertaBoton2 = -1;
+int duracionBuzzer = 300;
 
+String selectedAsset = "";
+
+// Mostrar OLED + Serial
+void mostrarEnPantallaYSerial(const String& msg1, const String& msg2 = "") {
+  Serial.println(msg1);
+  if (msg2 != "") Serial.println(msg2);
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.println(msg1);
+  if (msg2 != "") display.println(msg2);
+  display.display();
+}
+
+// Inicializar WiFi
 void wifiInit() {
-  Serial.print("Conectándose a WiFi: ");
-  Serial.println(ssid);
+  mostrarEnPantallaYSerial("Conectando WiFi", ssid);
   WiFi.begin(ssid, password);
-
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-
-  Serial.println("\n✅ WiFi conectado");
-  Serial.print("Dirección IP: ");
-  Serial.println(WiFi.localIP());
+  String ip = WiFi.localIP().toString();
+  mostrarEnPantallaYSerial("WiFi OK", "IP: " + ip);
 }
 
+// LEDs según cambio de precio
+void manejarCambioDePrecio(float anterior, float actual) {
+  if (anterior < 0 || actual < 0) return;
+
+  if (actual > anterior) {
+    digitalWrite(ledRed, LOW);
+    digitalWrite(ledGreen, LOW);
+    digitalWrite(ledWhite, HIGH);
+  } else if (actual < anterior) {
+    digitalWrite(ledRed, LOW);
+    digitalWrite(ledGreen, HIGH);
+    digitalWrite(ledWhite, LOW);
+  } else {
+    digitalWrite(ledRed, HIGH);
+    digitalWrite(ledGreen, LOW);
+    digitalWrite(ledWhite, LOW);
+  }
+}
+
+// MQTT callback
 void callback(char* topic, byte* payload, unsigned int length) {
   payload[length] = '\0';
-  String mensaje = String((char*)payload);
+  String msg = String((char*)payload);
+  String topicStr = String(topic);
 
-  Serial.print("📥 Mensaje recibido [");
-  Serial.print(topic);
-  Serial.print("]: ");
-  Serial.println(mensaje);
+  if (topicStr == "config/monitor01") {
+    JSONVar config = JSON.parse(msg);
+    if (JSON.typeof(config) == "undefined") {
+      Serial.println("❌ Error al parsear JSON");
+      return;
+    }
 
-  if (mensaje == "1") {
-    estadoLed1 = !estadoLed1;
-    digitalWrite(led1, estadoLed1);
-    sprintf(mensajeRespuesta, "LED 1 en pin %d %s", led1, estadoLed1 ? "encendido" : "apagado");
-  } else if (mensaje == "2") {
-    estadoLed2 = !estadoLed2;
-    digitalWrite(led2, estadoLed2);
-    sprintf(mensajeRespuesta, "LED 2 en pin %d %s", led2, estadoLed2 ? "encendido" : "apagado");
-  } else if (mensaje == "3") {
-    estadoLed3 = !estadoLed3;
-    digitalWrite(led3, estadoLed3);
-    sprintf(mensajeRespuesta, "LED 3 en pin %d %s", led3, estadoLed3 ? "encendido" : "apagado");
-  } else if (mensaje == "buzz") {
-    tone(buzzerPin, 1000, 500);  // 1000 Hz, 500 ms
-    strcpy(mensajeRespuesta, "🔊 Buzzer activado");
-  } else {
-    strcpy(mensajeRespuesta, "Comando no reconocido");
+    criptoBoton1 = (const char*)config["boton1"];
+    criptoBoton2 = (const char*)config["boton2"];
+    alertaBoton1 = (double)config["alerta1"];
+    alertaBoton2 = (double)config["alerta2"];
+    duracionBuzzer = (int)config["duracion"];
+
+    Serial.println("✅ Configuración actualizada:");
+    Serial.println("Botón 1: " + criptoBoton1 + " Alerta: " + String(alertaBoton1));
+    Serial.println("Botón 2: " + criptoBoton2 + " Alerta: " + String(alertaBoton2));
+    Serial.println("Duración buzzer: " + String(duracionBuzzer));
+    return;
   }
 
-  mqttClient.publish("ESP/Crypto", mensajeRespuesta);
-  Serial.print("📤 Respuesta publicada: ");
-  Serial.println(mensajeRespuesta);
+  float valor = msg.toFloat();
+
+  if (topicStr == "crypto/bitcoin") {
+    if (currentBTC >= 0) lastBTC = currentBTC;
+    currentBTC = valor;
+    if (selectedAsset == "BTC" || selectedAsset == "BTCUSDT") {
+      manejarCambioDePrecio(lastBTC, currentBTC);
+      mostrarEnPantallaYSerial("BTC:", String(currentBTC, 2));
+      if (alertaBoton1 > 0 && currentBTC >= alertaBoton1) tone(buzzer, 2000, duracionBuzzer);
+    }
+  } else if (topicStr == "crypto/solana") {
+    if (currentSOL >= 0) lastSOL = currentSOL;
+    currentSOL = valor;
+    if (selectedAsset == "SOL" || selectedAsset == "SOLUSDT") {
+      manejarCambioDePrecio(lastSOL, currentSOL);
+      mostrarEnPantallaYSerial("SOL:", String(currentSOL, 2));
+      if (alertaBoton2 > 0 && currentSOL >= alertaBoton2) tone(buzzer, 2000, duracionBuzzer);
+    }
+  }
 }
 
+// Conectar MQTT
 void conectarMQTT() {
   while (!mqttClient.connected()) {
-    Serial.print("Intentando conectar a MQTT...");
-    if (mqttClient.connect("ESP32Client_Crypto")) {
-      Serial.println("✅ Conectado");
-      mqttClient.subscribe("ESPS/Crypto");
+    mostrarEnPantallaYSerial("MQTT", "Conectando...");
+    if (mqttClient.connect("ESP32_Crypto")) {
+      mostrarEnPantallaYSerial("MQTT", "Conectado");
+      mqttClient.subscribe("crypto/bitcoin");
+      mqttClient.subscribe("crypto/solana");
+      mqttClient.subscribe("config/monitor01");
     } else {
-      Serial.print("❌ Error: ");
-      Serial.print(mqttClient.state());
-      Serial.println(" - Reintentando en 3s");
+      mostrarEnPantallaYSerial("MQTT FAIL", "Estado: " + String(mqttClient.state()));
       delay(3000);
     }
   }
 }
 
+// Setup
 void setup() {
   Serial.begin(115200);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    mostrarEnPantallaYSerial("Error OLED");
+    while (true);
+  }
 
-  // Configurar pines
-  pinMode(led1, OUTPUT);
-  pinMode(led2, OUTPUT);
-  pinMode(led3, OUTPUT);
-  pinMode(buzzerPin, OUTPUT);
-  pinMode(button18, INPUT_PULLUP);
-  pinMode(button19, INPUT_PULLUP);
+  pinMode(ledRed, OUTPUT);
+  pinMode(ledGreen, OUTPUT);
+  pinMode(ledWhite, OUTPUT);
+  pinMode(buttonRight, INPUT_PULLUP);
+  pinMode(buttonLeft, INPUT_PULLUP);
+  pinMode(buzzer, OUTPUT);
 
-  // Inicializar LEDs apagados
-  digitalWrite(led1, LOW);
-  digitalWrite(led2, LOW);
-  digitalWrite(led3, LOW);
+  digitalWrite(ledRed, LOW);
+  digitalWrite(ledGreen, LOW);
+  digitalWrite(ledWhite, LOW);
 
   wifiInit();
   mqttClient.setServer(mqtt_server, mqtt_port);
   mqttClient.setCallback(callback);
 }
 
+// Loop principal
 void loop() {
-  if (!mqttClient.connected()) {
-    conectarMQTT();
-  }
-
+  if (!mqttClient.connected()) conectarMQTT();
   mqttClient.loop();
 
-  // Leer botones
-  bool currentButton18 = digitalRead(button18);
-  bool currentButton19 = digitalRead(button19);
+  bool btnRight = digitalRead(buttonRight);
+  bool btnLeft = digitalRead(buttonLeft);
 
-  if (lastButton18 == HIGH && currentButton18 == LOW) {
-    mqttClient.publish("ESP/Crypto", "Botón 18 presionado");
-    Serial.println("🔘 Botón 18 presionado");
+  if (lastButtonRight == HIGH && btnRight == LOW) {
+    selectedAsset = criptoBoton1.startsWith("BTC") ? "BTC" : criptoBoton1;
+    mostrarEnPantallaYSerial(selectedAsset + ":", currentBTC >= 0 ? String(currentBTC, 2) : "Cargando");
+    tone(buzzer, 1000, 150);
+    if (lastBTC >= 0 && currentBTC >= 0) manejarCambioDePrecio(lastBTC, currentBTC);
   }
 
-  if (lastButton19 == HIGH && currentButton19 == LOW) {
-    mqttClient.publish("ESP/Crypto", "Botón 19 presionado");
-    Serial.println("🔘 Botón 19 presionado");
+  if (lastButtonLeft == HIGH && btnLeft == LOW) {
+    selectedAsset = criptoBoton2.startsWith("SOL") ? "SOL" : criptoBoton2;
+    mostrarEnPantallaYSerial(selectedAsset + ":", currentSOL >= 0 ? String(currentSOL, 2) : "Cargando");
+    tone(buzzer, 1500, 150);
+    if (lastSOL >= 0 && currentSOL >= 0) manejarCambioDePrecio(lastSOL, currentSOL);
   }
 
-  lastButton18 = currentButton18;
-  lastButton19 = currentButton19;
-
-  // Mensaje periódico opcional
-  if (millis() - lastMsg > 10000) {
-    lastMsg = millis();
-    Serial.println("📡 Esperando comandos en ESPS/Crypto...");
-  }
-
+  lastButtonRight = btnRight;
+  lastButtonLeft = btnLeft;
   delay(10);
 }
