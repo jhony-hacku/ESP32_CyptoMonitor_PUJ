@@ -1,3 +1,4 @@
+// === CÓDIGO ESP32 (Arduino) ===
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
@@ -5,7 +6,6 @@
 #include <Adafruit_SSD1306.h>
 #include <Arduino_JSON.h>
 
-// WiFi y MQTT
 const char* ssid = "ESP";
 const char* password = "BUZZ1%99";
 const char* mqtt_server = "broker.emqx.io";
@@ -14,31 +14,28 @@ const int mqtt_port = 1883;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
-// OLED
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
 #define OLED_ADDR 0x3C
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
-// Pines
-const int ledRed = 4;
-const int ledGreen = 15;
-const int ledWhite = 2;
+const int ledRed = 32;
+const int ledGreen = 25;
+const int ledWhite = 33;
 const int buttonRight = 19;
 const int buttonLeft = 18;
-const int buzzer = 5;
+const int buzzer = 26;
 
-// Estados de botones
 bool lastButtonRight = HIGH;
 bool lastButtonLeft = HIGH;
 
-// Variables de precio
 float lastBTC = -1;
 float lastSOL = -1;
+float lastETH = -1;
 float currentBTC = -1;
 float currentSOL = -1;
+float currentETH = -1;
 
-// Configuración dinámica
 String criptoBoton1 = "BTCUSDT";
 String criptoBoton2 = "SOLUSDT";
 float alertaBoton1 = -1;
@@ -47,7 +44,6 @@ int duracionBuzzer = 300;
 
 String selectedAsset = "";
 
-// Mostrar OLED + Serial
 void mostrarEnPantallaYSerial(const String& msg1, const String& msg2 = "") {
   Serial.println(msg1);
   if (msg2 != "") Serial.println(msg2);
@@ -61,7 +57,6 @@ void mostrarEnPantallaYSerial(const String& msg1, const String& msg2 = "") {
   display.display();
 }
 
-// Inicializar WiFi
 void wifiInit() {
   mostrarEnPantallaYSerial("Conectando WiFi", ssid);
   WiFi.begin(ssid, password);
@@ -73,26 +68,24 @@ void wifiInit() {
   mostrarEnPantallaYSerial("WiFi OK", "IP: " + ip);
 }
 
-// LEDs según cambio de precio
 void manejarCambioDePrecio(float anterior, float actual) {
   if (anterior < 0 || actual < 0) return;
 
   if (actual > anterior) {
     digitalWrite(ledRed, LOW);
-    digitalWrite(ledGreen, LOW);
-    digitalWrite(ledWhite, HIGH);
-  } else if (actual < anterior) {
-    digitalWrite(ledRed, LOW);
     digitalWrite(ledGreen, HIGH);
     digitalWrite(ledWhite, LOW);
-  } else {
+  } else if (actual < anterior) {
     digitalWrite(ledRed, HIGH);
     digitalWrite(ledGreen, LOW);
     digitalWrite(ledWhite, LOW);
+  } else {
+    digitalWrite(ledRed, LOW);
+    digitalWrite(ledGreen, LOW);
+    digitalWrite(ledWhite, HIGH);
   }
 }
 
-// MQTT callback
 void callback(char* topic, byte* payload, unsigned int length) {
   payload[length] = '\0';
   String msg = String((char*)payload);
@@ -101,20 +94,14 @@ void callback(char* topic, byte* payload, unsigned int length) {
   if (topicStr == "config/monitor01") {
     JSONVar config = JSON.parse(msg);
     if (JSON.typeof(config) == "undefined") {
-      Serial.println("❌ Error al parsear JSON");
+      Serial.println("Error al parsear JSON");
       return;
     }
-
     criptoBoton1 = (const char*)config["boton1"];
     criptoBoton2 = (const char*)config["boton2"];
     alertaBoton1 = (double)config["alerta1"];
     alertaBoton2 = (double)config["alerta2"];
     duracionBuzzer = (int)config["duracion"];
-
-    Serial.println("✅ Configuración actualizada:");
-    Serial.println("Botón 1: " + criptoBoton1 + " Alerta: " + String(alertaBoton1));
-    Serial.println("Botón 2: " + criptoBoton2 + " Alerta: " + String(alertaBoton2));
-    Serial.println("Duración buzzer: " + String(duracionBuzzer));
     return;
   }
 
@@ -136,10 +123,17 @@ void callback(char* topic, byte* payload, unsigned int length) {
       mostrarEnPantallaYSerial("SOL:", String(currentSOL, 2));
       if (alertaBoton2 > 0 && currentSOL >= alertaBoton2) tone(buzzer, 2000, duracionBuzzer);
     }
+  } else if (topicStr == "crypto/ethereum") {
+    if (currentETH >= 0) lastETH = currentETH;
+    currentETH = valor;
+    if (selectedAsset == "ETH" || selectedAsset == "ETHUSDT") {
+      manejarCambioDePrecio(lastETH, currentETH);
+      mostrarEnPantallaYSerial("ETH:", String(currentETH, 2));
+      if (alertaBoton1 > 0 && currentETH >= alertaBoton1) tone(buzzer, 2000, duracionBuzzer);
+    }
   }
 }
 
-// Conectar MQTT
 void conectarMQTT() {
   while (!mqttClient.connected()) {
     mostrarEnPantallaYSerial("MQTT", "Conectando...");
@@ -147,6 +141,7 @@ void conectarMQTT() {
       mostrarEnPantallaYSerial("MQTT", "Conectado");
       mqttClient.subscribe("crypto/bitcoin");
       mqttClient.subscribe("crypto/solana");
+      mqttClient.subscribe("crypto/ethereum");
       mqttClient.subscribe("config/monitor01");
     } else {
       mostrarEnPantallaYSerial("MQTT FAIL", "Estado: " + String(mqttClient.state()));
@@ -155,7 +150,6 @@ void conectarMQTT() {
   }
 }
 
-// Setup
 void setup() {
   Serial.begin(115200);
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
@@ -179,7 +173,6 @@ void setup() {
   mqttClient.setCallback(callback);
 }
 
-// Loop principal
 void loop() {
   if (!mqttClient.connected()) conectarMQTT();
   mqttClient.loop();
@@ -188,17 +181,27 @@ void loop() {
   bool btnLeft = digitalRead(buttonLeft);
 
   if (lastButtonRight == HIGH && btnRight == LOW) {
-    selectedAsset = criptoBoton1.startsWith("BTC") ? "BTC" : criptoBoton1;
-    mostrarEnPantallaYSerial(selectedAsset + ":", currentBTC >= 0 ? String(currentBTC, 2) : "Cargando");
+    selectedAsset = criptoBoton1;
+    float precio = -1;
+    if (selectedAsset.startsWith("BTC")) precio = currentBTC;
+    else if (selectedAsset.startsWith("SOL")) precio = currentSOL;
+    else if (selectedAsset.startsWith("ETH")) precio = currentETH;
+
+    mostrarEnPantallaYSerial(selectedAsset + ":", precio >= 0 ? String(precio, 2) : "Cargando");
     tone(buzzer, 1000, 150);
-    if (lastBTC >= 0 && currentBTC >= 0) manejarCambioDePrecio(lastBTC, currentBTC);
+    if (precio >= 0) manejarCambioDePrecio(precio, precio);
   }
 
   if (lastButtonLeft == HIGH && btnLeft == LOW) {
-    selectedAsset = criptoBoton2.startsWith("SOL") ? "SOL" : criptoBoton2;
-    mostrarEnPantallaYSerial(selectedAsset + ":", currentSOL >= 0 ? String(currentSOL, 2) : "Cargando");
+    selectedAsset = criptoBoton2;
+    float precio = -1;
+    if (selectedAsset.startsWith("BTC")) precio = currentBTC;
+    else if (selectedAsset.startsWith("SOL")) precio = currentSOL;
+    else if (selectedAsset.startsWith("ETH")) precio = currentETH;
+
+    mostrarEnPantallaYSerial(selectedAsset + ":", precio >= 0 ? String(precio, 2) : "Cargando");
     tone(buzzer, 1500, 150);
-    if (lastSOL >= 0 && currentSOL >= 0) manejarCambioDePrecio(lastSOL, currentSOL);
+    if (precio >= 0) manejarCambioDePrecio(precio, precio);
   }
 
   lastButtonRight = btnRight;
