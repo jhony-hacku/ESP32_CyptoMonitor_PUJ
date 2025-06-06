@@ -1,4 +1,3 @@
-// === CÓDIGO ESP32 (Arduino) ===
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
@@ -41,6 +40,10 @@ String criptoBoton2 = "SOLUSDT";
 float alertaBoton1 = -1;
 float alertaBoton2 = -1;
 int duracionBuzzer = 300;
+
+bool alertaBTCActivada = false;
+bool alertaSOLActivada = false;
+bool alertaETHActivada = false;
 
 String selectedAsset = "";
 
@@ -97,6 +100,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
       Serial.println("Error al parsear JSON");
       return;
     }
+
     criptoBoton1 = (const char*)config["boton1"];
     criptoBoton2 = (const char*)config["boton2"];
     alertaBoton1 = (double)config["alerta1"];
@@ -110,26 +114,63 @@ void callback(char* topic, byte* payload, unsigned int length) {
   if (topicStr == "crypto/bitcoin") {
     if (currentBTC >= 0) lastBTC = currentBTC;
     currentBTC = valor;
+
+    bool esBoton1 = criptoBoton1.startsWith("BTC");
+    float alertaBTC = esBoton1 ? alertaBoton1 : alertaBoton2;
+
     if (selectedAsset == "BTC" || selectedAsset == "BTCUSDT") {
       manejarCambioDePrecio(lastBTC, currentBTC);
       mostrarEnPantallaYSerial("BTC:", String(currentBTC, 2));
-      if (alertaBoton1 > 0 && currentBTC >= alertaBoton1) tone(buzzer, 2000, duracionBuzzer);
     }
-  } else if (topicStr == "crypto/solana") {
+
+    if (alertaBTC > 0 && currentBTC >= alertaBTC && !alertaBTCActivada) {
+      tone(buzzer, 2000, duracionBuzzer);
+      alertaBTCActivada = true;
+    }
+    if (alertaBTC > 0 && currentBTC < alertaBTC) {
+      alertaBTCActivada = false;
+    }
+  }
+
+  else if (topicStr == "crypto/solana") {
     if (currentSOL >= 0) lastSOL = currentSOL;
     currentSOL = valor;
+
+    bool esBoton1 = criptoBoton1.startsWith("SOL");
+    float alertaSOL = esBoton1 ? alertaBoton1 : alertaBoton2;
+
     if (selectedAsset == "SOL" || selectedAsset == "SOLUSDT") {
       manejarCambioDePrecio(lastSOL, currentSOL);
       mostrarEnPantallaYSerial("SOL:", String(currentSOL, 2));
-      if (alertaBoton2 > 0 && currentSOL >= alertaBoton2) tone(buzzer, 2000, duracionBuzzer);
     }
-  } else if (topicStr == "crypto/ethereum") {
+
+    if (alertaSOL > 0 && currentSOL >= alertaSOL && !alertaSOLActivada) {
+      tone(buzzer, 2000, duracionBuzzer);
+      alertaSOLActivada = true;
+    }
+    if (alertaSOL > 0 && currentSOL < alertaSOL) {
+      alertaSOLActivada = false;
+    }
+  }
+
+  else if (topicStr == "crypto/ethereum") {
     if (currentETH >= 0) lastETH = currentETH;
     currentETH = valor;
+
+    bool esBoton1 = criptoBoton1.startsWith("ETH");
+    float alertaETH = esBoton1 ? alertaBoton1 : alertaBoton2;
+
     if (selectedAsset == "ETH" || selectedAsset == "ETHUSDT") {
       manejarCambioDePrecio(lastETH, currentETH);
       mostrarEnPantallaYSerial("ETH:", String(currentETH, 2));
-      if (alertaBoton1 > 0 && currentETH >= alertaBoton1) tone(buzzer, 2000, duracionBuzzer);
+    }
+
+    if (alertaETH > 0 && currentETH >= alertaETH && !alertaETHActivada) {
+      tone(buzzer, 2000, duracionBuzzer);
+      alertaETHActivada = true;
+    }
+    if (alertaETH > 0 && currentETH < alertaETH) {
+      alertaETHActivada = false;
     }
   }
 }
